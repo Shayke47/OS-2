@@ -6,9 +6,111 @@
 #include "proc.h"
 #include "defs.h"
 
+extern uint64 cas (volatile void* address, int expected, int newval);
+
 struct cpu cpus[NCPU];
 
+
+
+int ready_list[NCPU];
+int zombie_list = -1;
+int sleeping_list = -1;
+int unused_list = -1;
+
+void init_ready(){
+  for(int i=0; i < NCPU; i++){
+    ready_list[i] = -1;
+  }
+}
+
+
 struct proc proc[NPROC];
+
+struct proc* get_last(int* head){
+  int index;
+  int curr_head = *head;
+  struct proc* p = &proc[curr_head];
+  for(index = curr_head; index != -1;){
+    p = &proc[index];
+    index = p->next;
+
+    // in case that the head is removed while adding another process to the list!@#!@#!@#!@#!@
+  }
+  return p;
+}
+
+void 
+add_proc_to_list(int pindex, int* head)
+{
+  if(pindex < 0 || pindex > NPROC){
+    panic("Add proc to list");
+  }
+  struct proc* currlast;
+  do{
+    currlast = get_last(head);
+  }while(cas(&(currlast->next), -1, pindex));
+}
+
+int 
+remove(int* head)
+{
+  if(*head == -1)
+    return -1;
+  
+  int to_remove;
+  struct proc *p;
+  int next_head;
+  do{
+    to_remove = *head;
+    p = &proc[to_remove];
+    next_head = p->next;
+  }while (cas(head, to_remove, next_head));
+  p->next = -1;
+  return to_remove;
+}
+
+int
+remove_proc(int* head, struct proc* p){
+  if(*head == -1){
+    return -1;
+  }
+  int ret;
+  struct proc* curr;
+  struct proc* last = 0;
+  for(curr = proc; curr < &proc[NPROC]; curr++){
+    if(curr == p){
+      if(!last){
+        *head = p->next;    //maybe needed CAS!@#!@#!@$!#@$!#@$!#@$
+      }
+      else{
+        ret = last->next;
+        last->next = p->next;
+        break;
+      }
+    }
+    last = curr;
+  }
+  return ret;
+}
+
+int 
+find_in_proc(struct proc* p)
+{
+  // (p - proc)/sizeof(struct proc);
+  struct proc* curr;
+  int index = 0;
+  for(curr = proc; curr < &proc[NPROC]; curr++){
+    if(curr == p){
+      return index;
+    }
+    index++;
+  }
+  return -1;
+}
+
+// void remove_and_add(int src, int dest){
+//   add_proc_to_list(remove(src), dest);
+// }
 
 struct proc *initproc;
 
@@ -17,7 +119,6 @@ struct spinlock pid_lock;
 
 extern void forkret(void);
 static void freeproc(struct proc *p);
-extern uint64 cas (volatile void* address, int expected, int newval);
 
 extern char trampoline[]; // trampoline.S
 
@@ -126,6 +227,7 @@ allocproc(void)
 found:
   p->pid = allocpid();
   p->state = USED;
+  p->next = -1;
 
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
@@ -171,6 +273,11 @@ freeproc(struct proc *p)
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
+  int index = remove_proc(&zombie_list, p);
+  if(index == -1){
+    panic("Freeproc: failed to remove process from zombie list");
+  }
+  add_proc_to_list(index, &unused_list);
 }
 
 // Create a user page table for a given process,
@@ -320,6 +427,12 @@ fork(void)
 
   acquire(&np->lock);
   np->state = RUNNABLE;
+  np->cpu_id = p->cpu_id;
+  int index = find_in_proc(np);
+  if(index < 0){
+    panic("Fork, couldn't find in proc table\n");
+  }
+  add_proc_to_list(index, &(ready_list[np->cpu_id]));
   release(&np->lock);
 
 
@@ -378,6 +491,12 @@ exit(int status)
 
   p->xstate = status;
   p->state = ZOMBIE;
+
+  int index = find_in_proc(p);
+  if (index == -1){
+    panic("Exit: Couldn't find in proc table");
+  }
+  add_proc_to_list(index, &zombie_list);
 
   release(&wait_lock);
 
@@ -449,26 +568,50 @@ scheduler(void)
   struct cpu *c = mycpu();
   
   c->proc = 0;
+  int head;
+  int torun;
   for(;;){
     // Avoid deadlock by ensuring that devices can interrupt.
     intr_on();
 
-    for(p = proc; p < &proc[NPROC]; p++) {
-      acquire(&p->lock);
-      if(p->state == RUNNABLE) {
-        // Switch to chosen process.  It is the process's job
-        // to release its lock and then reacquire it
-        // before jumping back to us.
-        p->state = RUNNING;
-        c->proc = p;
-        swtch(&c->context, &p->context);
+    head = &ready_list[cpuid()];
+    torun = remove(head);
 
-        // Process is done running for now.
-        // It should have changed its p->state before coming back.
-        c->proc = 0;
-      }
-      release(&p->lock);
+    //if empty list
+    if(torun == -1){
+      continue;
     }
+
+    p = &proc[torun];
+    acquire(&p->lock);
+
+    if(p->state!=RUNNABLE)
+      panic("bad proc was selected");
+
+    p->state = RUNNING;
+    c->proc = p;
+    swtch(&c->context, &p->context);
+
+    c->proc = 0;
+    release(&p->lock);
+    
+    // for(p = proc; p < &proc[NPROC]; p++) {
+    //   acquire(&p->lock);
+    //   if(p->state == RUNNABLE) {
+    //     // Switch to chosen process.  It is the process's job
+    //     // to release its lock and then reacquire it
+    //     // before jumping back to us.
+    //     p->state = RUNNING;
+    //     c->proc = p;
+    //     swtch(&c->context, &p->context);
+
+    //     // Process is done running for now.
+    //     // It should have changed its p->state before coming back.
+    //     c->proc = 0;
+    //   }
+    //   release(&p->lock);
+    // }
+    
   }
 }
 
@@ -552,6 +695,12 @@ sleep(void *chan, struct spinlock *lk)
   p->chan = chan;
   p->state = SLEEPING;
 
+  // int tosleep = remove(&ready_list[cpuid()]);  //wouldnt be here because it is removed in scheduler
+  int tosleep = find_in_proc(p);
+  if(tosleep==-1)
+    panic("sleep: couldnt find p in proc\n");
+  add_proc_to_list(tosleep, &sleeping_list);
+
   sched();
 
   // Tidy up.
@@ -568,16 +717,38 @@ void
 wakeup(void *chan)
 {
   struct proc *p;
-
-  for(p = proc; p < &proc[NPROC]; p++) {
-    if(p != myproc()){
-      acquire(&p->lock);
-      if(p->state == SLEEPING && p->chan == chan) {
-        p->state = RUNNABLE;
+  struct proc* last;
+  int i;
+  int p_ind;
+  for(i = sleeping_list; i != -1;){
+    p = &proc[i];
+    acquire(&p->lock);
+    if(p->chan == chan){
+      p->state = RUNNABLE;
+      if(last){
+        p_ind = last->next;
+        last->next = p->next;
       }
-      release(&p->lock);
+      else{
+        p_ind = find_in_proc(p);
+        sleeping_list = p->next;    // maybe need CAS !@#!@#!@#!@#!@#
+      }
+      add_proc_to_list(p_ind, &ready_list[p->cpu_id]);
     }
+    i = p->next;
+    release(&p->lock);
   }
+
+  // for(p = proc; p < &proc[NPROC]; p++) {
+  //   if(p != myproc()){
+  //     acquire(&p->lock);
+  //     if(p->state == SLEEPING && p->chan == chan) {
+  //       p->state = RUNNABLE;
+
+  //     }
+  //     release(&p->lock);
+  //   }
+  // }
 }
 
 // Kill the process with the given pid.
@@ -662,3 +833,21 @@ procdump(void)
     printf("\n");
   }
 }
+
+int 
+set_cpu(int cpu_num)
+{
+  if(cpu_num<0 || cpu_num>NCPU){
+    return -1;
+  }
+  myproc()->cpu_id = cpu_num;
+  yield();
+  return cpu_num;
+}
+
+int 
+get_cpu()
+{
+  return cpuid();
+}
+

@@ -105,3 +105,13 @@ uptime:
  li a7, SYS_uptime
  ecall
  ret
+.global set_cpu
+set_cpu:
+ li a7, SYS_set_cpu
+ ecall
+ ret
+.global get_cpu
+get_cpu:
+ li a7, SYS_get_cpu
+ ecall
+ ret
