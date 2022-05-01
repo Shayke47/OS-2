@@ -17,6 +17,7 @@ struct spinlock pid_lock;
 
 extern void forkret(void);
 static void freeproc(struct proc *p);
+extern uint64 cas (volatile void* address, int expected, int newval);
 
 extern char trampoline[]; // trampoline.S
 
@@ -88,11 +89,17 @@ myproc(void) {
 int
 allocpid() {
   int pid;
+
+  do
+  {
+    pid = nextpid;
+  } while (cas(&nextpid, pid, pid+1));
+
   
-  acquire(&pid_lock);
-  pid = nextpid;
-  nextpid = nextpid + 1;
-  release(&pid_lock);
+  // acquire(&pid_lock);
+  // pid = nextpid;
+  // nextpid = nextpid + 1;
+  // release(&pid_lock);
 
   return pid;
 }
@@ -314,6 +321,7 @@ fork(void)
   acquire(&np->lock);
   np->state = RUNNABLE;
   release(&np->lock);
+
 
   return pid;
 }
