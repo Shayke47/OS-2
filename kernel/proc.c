@@ -423,11 +423,8 @@ freeproc(struct proc *p)
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
-  int index = remove_proc(&zombie_list, p);
-  if(index == -1){
-    panic("Freeproc: failed to remove process from zombie list");
-  }
-  add_proc_to_list(index, &unused_list);
+  remove_proc(p, ZOMBIEL);
+  add_proc_to_list(p, UNUSEDL);
 }
 
 // Create a user page table for a given process,
@@ -578,11 +575,8 @@ fork(void)
   acquire(&np->lock);
   np->state = RUNNABLE;
   np->cpu_id = p->cpu_id;
-  int index = find_in_proc(np);
-  if(index < 0){
-    panic("Fork, couldn't find in proc table\n");
-  }
-  add_proc_to_list(index, &(ready_list[np->cpu_id]));
+  
+  add_proc_to_list(np, READYL);
   release(&np->lock);
 
 
@@ -642,11 +636,7 @@ exit(int status)
   p->xstate = status;
   p->state = ZOMBIE;
 
-  int index = find_in_proc(p);
-  if (index == -1){
-    panic("Exit: Couldn't find in proc table");
-  }
-  add_proc_to_list(index, &zombie_list);
+  add_proc_to_list(p, ZOMBIEL);
 
   release(&wait_lock);
 
@@ -718,21 +708,17 @@ scheduler(void)
   struct cpu *c = mycpu();
   
   c->proc = 0;
-  int head;
-  int torun;
   for(;;){
     // Avoid deadlock by ensuring that devices can interrupt.
     intr_on();
 
-    head = &ready_list[cpuid()];
-    torun = remove(head);
+    p = remove_first(READYL);
 
     //if empty list
-    if(torun == -1){
+    if(!p){
       continue;
     }
 
-    p = &proc[torun];
     acquire(&p->lock);
 
     if(p->state!=RUNNABLE)
@@ -744,24 +730,6 @@ scheduler(void)
 
     c->proc = 0;
     release(&p->lock);
-    
-    // for(p = proc; p < &proc[NPROC]; p++) {
-    //   acquire(&p->lock);
-    //   if(p->state == RUNNABLE) {
-    //     // Switch to chosen process.  It is the process's job
-    //     // to release its lock and then reacquire it
-    //     // before jumping back to us.
-    //     p->state = RUNNING;
-    //     c->proc = p;
-    //     swtch(&c->context, &p->context);
-
-    //     // Process is done running for now.
-    //     // It should have changed its p->state before coming back.
-    //     c->proc = 0;
-    //   }
-    //   release(&p->lock);
-    // }
-    
   }
 }
 
@@ -845,11 +813,7 @@ sleep(void *chan, struct spinlock *lk)
   p->chan = chan;
   p->state = SLEEPING;
 
-  // int tosleep = remove(&ready_list[cpuid()]);  //wouldnt be here because it is removed in scheduler
-  int tosleep = find_in_proc(p);
-  if(tosleep==-1)
-    panic("sleep: couldnt find p in proc\n");
-  add_proc_to_list(tosleep, &sleeping_list);
+  add_proc_to_list(p, SLEEPINGL);
 
   sched();
 
@@ -866,28 +830,79 @@ sleep(void *chan, struct spinlock *lk)
 void
 wakeup(void *chan)
 {
-  struct proc *p;
-  struct proc* last;
-  int i;
-  int p_ind;
-  for(i = sleeping_list; i != -1;){
-    p = &proc[i];
+  acquire_list(SLEEPINGL);
+  struct proc *p = get_head(SLEEPINGL);
+  struct proc* prev = 0;
+  
+  acquire(&p->lock);
+
+  // remove all the first processes in a row
+  while(p->chan == chan){
+    acquire(&p->list_lock);
+    set_head(p->next, SLEEPINGL);
+    add_proc_to_list(p, READYL);
+    p->state = RUNNABLE;
+    release(&p->lock);
+    release(&p->list_lock);
+    p = p->next;
+    acquire(&p->lock);
+  }
+
+  release(&p->lock);
+
+  // remove everyone else
+  while(p){
+    acquire(&p->list_lock);
     acquire(&p->lock);
     if(p->chan == chan){
       p->state = RUNNABLE;
-      if(last){
-        p_ind = last->next;
-        last->next = p->next;
-      }
-      else{
-        p_ind = find_in_proc(p);
-        sleeping_list = p->next;    // maybe need CAS !@#!@#!@#!@#!@#
-      }
-      add_proc_to_list(p_ind, &ready_list[p->cpu_id]);
+      prev->next = p->next;
+      release(&p->lock);
+      release(&p->list_lock);
+      remove_proc(p, SLEEPINGL);
+      add_proc_to_list(p, READYL);
+      p = prev->next;
+      continue;
     }
-    i = p->next;
-    release(&p->lock);
+    else{
+      release(&p->lock);
+    }
+
+    if(prev){
+      release(&prev->list_lock);
+    }
+    else{
+      release_list(SLEEPINGL);
+    }
+
+    prev = p;
+    p = p->next;
+    
+    // else{
+      
+    // }
+
   }
+
+
+  // for(i = sleeping_list; i != -1;){
+  //   p = &proc[i];
+  //   acquire(&p->lock);
+  //   if(p->chan == chan){
+  //     p->state = RUNNABLE;
+  //     if(last){
+  //       p_ind = last->next;
+  //       last->next = p->next;
+  //     }
+  //     else{
+  //       p_ind = find_in_proc(p);
+  //       sleeping_list = p->next;    // maybe need CAS !@#!@#!@#!@#!@#
+  //     }
+  //     add_proc_to_list(p_ind, &ready_list[p->cpu_id]);
+  //   }
+  //   i = p->next;
+  //   release(&p->lock);
+  // }
 
   // for(p = proc; p < &proc[NPROC]; p++) {
   //   if(p != myproc()){
