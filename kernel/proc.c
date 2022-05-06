@@ -12,85 +12,225 @@ struct cpu cpus[NCPU];
 
 
 
-int ready_list[NCPU];
-int zombie_list = -1;
-int sleeping_list = -1;
-int unused_list = -1;
+struct proc* ready_list[NCPU];
+struct proc *zombie_list = 0;
+struct proc *sleeping_list = 0;
+struct proc *unused_list = 0;
 
-void init_ready(){
-  for(int i=0; i < NCPU; i++){
-    ready_list[i] = -1;
-  }
-}
+struct spinlock ready_lock[NCPU];
+struct spinlock zombie_lock;
+struct spinlock sleeping_lock;
+struct spinlock unused_lock;
 
+enum list_type {READYL, ZOMBIEL, SLEEPINGL, UNUSEDL};
 
-struct proc proc[NPROC];
+struct proc* get_head(int type){
+  struct proc* p;
 
-struct proc* get_last(int* head){
-  int index;
-  int curr_head = *head;
-  struct proc* p = &proc[curr_head];
-  for(index = curr_head; index != -1;){
-    p = &proc[index];
-    index = p->next;
-
-    // in case that the head is removed while adding another process to the list!@#!@#!@#!@#!@
+  switch (type)
+  {
+  case READYL:
+    p = ready_list[cpuid()];
+    break;
+  case ZOMBIEL:
+    p = zombie_list;
+    break;
+  case SLEEPINGL:
+    p = sleeping_list;
+    break;
+  case UNUSEDL:
+    p = unused_list;
+    break;
+  
+  default:
+    panic("wrong type list");
   }
   return p;
 }
 
-void 
-add_proc_to_list(int pindex, int* head)
-{
-  if(pindex < 0 || pindex > NPROC){
-    panic("Add proc to list");
+struct proc* set_head(struct proc* p, int type){
+  switch (type)
+  {
+  case READYL:
+    ready_list[cpuid()] = p;
+    break;
+  case ZOMBIEL:
+    zombie_list = p;
+    break;
+  case SLEEPINGL:
+    sleeping_list = p;
+    break;
+  case UNUSEDL:
+    unused_list = p;
+    break;
+  
+  default:
+    panic("wrong type list");
   }
-  struct proc* currlast;
-  do{
-    currlast = get_last(head);
-  }while(cas(&(currlast->next), -1, pindex));
 }
 
-int 
-remove(int* head)
-{
-  if(*head == -1)
-    return -1;
+void
+acquire_list(int type){
+  switch (type)
+  {
+  case READYL:
+    acquire(&ready_lock[cpuid()]);
+    break;
+  case ZOMBIEL:
+    acquire(&zombie_lock);
+    break;
+  case SLEEPINGL:
+    acquire(&sleeping_lock);
+    break;
+  case UNUSEDL:
+    acquire(&unused_lock);
+    break;
   
-  int to_remove;
-  struct proc *p;
-  int next_head;
-  do{
-    to_remove = *head;
-    p = &proc[to_remove];
-    next_head = p->next;
-  }while (cas(head, to_remove, next_head));
-  p->next = -1;
-  return to_remove;
+  default:
+    panic("wrong type list");
+  }
+}
+
+void
+release_list(int type){
+  switch (type)
+  {
+  case READYL:
+    release(&ready_lock[cpuid()]);
+    break;
+  case ZOMBIEL:
+    release(&zombie_lock);
+    break;
+  case SLEEPINGL:
+    release(&sleeping_lock);
+    break;
+  case UNUSEDL:
+    release(&unused_lock);
+    break;
+  
+  default:
+    panic("wrong type list");
+  }
+}
+
+
+
+// void init_ready(){
+//   for(int i=0; i < NCPU; i++){
+//     ready_list[i] = 0;
+//   }
+// }
+
+
+struct proc proc[NPROC];
+
+// struct proc* get_last(int* head){
+//   int index;
+//   int curr_head = *head;
+//   struct proc* p = &proc[curr_head];
+//   for(index = curr_head; index != -1;){
+//     p = &proc[index];
+//     index = p->next;
+
+//     // in case that the head is removed while adding another process to the list!@#!@#!@#!@#!@
+//   }
+//   return p;
+// }
+
+void 
+add_proc_to_list(struct proc* p, int type)
+{
+  // bad argument
+  if(!p){
+    panic("Add proc to list");
+  }
+  struct proc* head;
+  acquire_list(type);
+  head = get_head(type);
+  // empty list
+  if(!head){
+      set_head(p, type);
+      release_list(type);
+  }
+  else{
+    struct proc* prev = 0;
+    while(head){
+      acquire(&head->list_lock);
+
+      if(prev)
+        release(&prev->list_lock);
+      else{
+        release_list(type);
+      }
+      prev = head;
+      head = head->next;
+    }
+    prev->next = p;
+    release(&prev->list_lock);
+  }
+}
+
+struct proc* 
+remove_first(int type)
+{
+  acquire_list(type);
+  struct proc* head = get_head(type);
+  struct proc* ret = 0;
+  if(!head){
+    release_list(type);
+  }
+  else{
+    acquire(&head->list_lock);
+    ret = head;
+    set_head(head->next, type);
+    release(&head->list_lock);
+    release_list(type);
+  }
+  return ret;
 }
 
 int
-remove_proc(int* head, struct proc* p){
-  if(*head == -1){
-    return -1;
+remove_proc(struct proc* p, int type){
+  acquire_list(type);
+  struct proc* head = get_head(type);
+  if(!head){
+    release_list(type);
+    return 0;
   }
-  int ret;
-  struct proc* curr;
-  struct proc* last = 0;
-  for(curr = proc; curr < &proc[NPROC]; curr++){
-    if(curr == p){
-      if(!last){
-        *head = p->next;    //maybe needed CAS!@#!@#!@$!#@$!#@$!#@$
-      }
-      else{
-        ret = last->next;
-        last->next = p->next;
-        break;
+  else{
+    struct proc* curr;
+    struct proc* prev = 0;
+    if(p == head){
+      // remove node, p is the first link
+      acquire(&p->list_lock);
+      set_head(p->next, type);
+      release(&p->list_lock);
+      release_list(type);
+    }
+    else{
+      curr = head;
+      while(head){
+        acquire(&head->list_lock);
+
+        if(p == head){
+          // remove node, head is the first link
+          prev->next = head->next;
+          release(&head->list_lock);
+          release(&prev->list_lock);
+          return 1;
+        }
+
+        if(!prev)
+          release_list(type);
+        else
+          release(&prev->list_lock);
+        
+        prev = head;
+        head = head->next;
       }
     }
-    last = curr;
+    return 0;
   }
-  return ret;
 }
 
 int 
@@ -152,8 +292,18 @@ procinit(void)
   
   initlock(&pid_lock, "nextpid");
   initlock(&wait_lock, "wait_lock");
+  initlock(&zombie_lock, "zombie lock");
+  initlock(&sleeping_lock, "sleeping lock");
+  initlock(&unused_lock, "unused lock");
+  
+  struct spinlock* s;
+  for(s = ready_lock; s <&ready_lock[NCPU]; s++){
+    initlock(s, "ready lock");
+  }
+
   for(p = proc; p < &proc[NPROC]; p++) {
       initlock(&p->lock, "proc");
+      initlock(&p->list_lock, "list lock");
       p->kstack = KSTACK((int) (p - proc));
   }
 }
