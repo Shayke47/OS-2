@@ -10,9 +10,6 @@ extern uint64 cas (volatile void* address, int expected, int newval);
 
 struct cpu cpus[NCPU];
 
-
-
-struct proc* ready_list[NCPU];
 struct proc *zombie_list = 0;
 struct proc *sleeping_list = 0;
 struct proc *unused_list = 0;
@@ -22,6 +19,8 @@ struct spinlock zombie_lock;
 struct spinlock sleeping_lock;
 struct spinlock unused_lock;
 
+int init = 0;
+
 enum list_type {READYL, ZOMBIEL, SLEEPINGL, UNUSEDL};
 
 struct proc* get_head(int type){
@@ -30,7 +29,7 @@ struct proc* get_head(int type){
   switch (type)
   {
   case READYL:
-    p = ready_list[cpuid()];
+    p = cpus[myproc()->cpu_id].head;
     break;
   case ZOMBIEL:
     p = zombie_list;
@@ -52,7 +51,7 @@ struct proc* set_head(struct proc* p, int type){
   switch (type)
   {
   case READYL:
-    ready_list[cpuid()] = p;
+    cpus[myproc()->cpu_id].head = p;
     break;
   case ZOMBIEL:
     zombie_list = p;
@@ -74,7 +73,7 @@ acquire_list(int type){
   switch (type)
   {
   case READYL:
-    acquire(&ready_lock[cpuid()]);
+    acquire(&ready_lock[myproc()->cpu_id]);
     break;
   case ZOMBIEL:
     acquire(&zombie_lock);
@@ -96,7 +95,7 @@ release_list(int type){
   switch (type)
   {
   case READYL:
-    release(&ready_lock[cpuid()]);
+    release(&ready_lock[myproc()->cpu_id]);
     break;
   case ZOMBIEL:
     release(&zombie_lock);
@@ -115,12 +114,6 @@ release_list(int type){
 
 
 
-// void init_ready(){
-//   for(int i=0; i < NCPU; i++){
-//     ready_list[i] = 0;
-//   }
-// }
-
 
 struct proc proc[NPROC];
 
@@ -137,16 +130,9 @@ struct proc proc[NPROC];
 //   return p;
 // }
 
-void 
-add_proc_to_list(struct proc* p, int type)
+void
+add_to_list(struct proc* p, struct proc* head, int type)
 {
-  // bad argument
-  if(!p){
-    panic("Add proc to list");
-  }
-  struct proc* head;
-  acquire_list(type);
-  head = get_head(type);
   // empty list
   if(!head){
       set_head(p, type);
@@ -169,6 +155,72 @@ add_proc_to_list(struct proc* p, int type)
     release(&prev->list_lock);
   }
 }
+
+void 
+add_proc_to_list(struct proc* p, int type)
+{
+  // bad argument
+  if(!p){
+    panic("Add proc to list");
+  }
+  struct proc* head;
+  acquire_list(type);
+  head = get_head(type);
+  add_to_list(p, head, type);
+  // // empty list
+  // if(!head){
+  //     set_head(p, type);
+  //     release_list(type);
+  // }
+  // else{
+  //   struct proc* prev = 0;
+  //   while(head){
+  //     acquire(&head->list_lock);
+
+  //     if(prev)
+  //       release(&prev->list_lock);
+  //     else{
+  //       release_list(type);
+  //     }
+  //     prev = head;
+  //     head = head->next;
+  //   }
+  //   prev->next = p;
+  //   release(&prev->list_lock);
+  // }
+}
+
+void
+add_proc_to_another_cpu(struct proc* p)
+{
+  struct spinlock sp = ready_lock[p->cpu_id];
+  acquire(&sp);
+  struct proc* head;
+  head = cpus[p->cpu_id].head;
+
+  // empty list
+  if(!head){
+      cpus[p->cpu_id].head = p;
+      release(&sp);
+  }
+  else{
+    struct proc* prev = 0;
+    while(head){
+      acquire(&head->list_lock);
+
+      if(prev)
+        release(&prev->list_lock);
+      else{
+        release(&sp);
+      }
+      prev = head;
+      head = head->next;
+    }
+    prev->next = p;
+    release(&prev->list_lock);
+  }
+}
+
 
 struct proc* 
 remove_first(int type)
@@ -305,6 +357,7 @@ procinit(void)
       initlock(&p->lock, "proc");
       initlock(&p->list_lock, "list lock");
       p->kstack = KSTACK((int) (p - proc));
+      add_proc_to_list(p, UNUSEDL);
   }
 }
 
@@ -346,12 +399,6 @@ allocpid() {
     pid = nextpid;
   } while (cas(&nextpid, pid, pid+1));
 
-  
-  // acquire(&pid_lock);
-  // pid = nextpid;
-  // nextpid = nextpid + 1;
-  // release(&pid_lock);
-
   return pid;
 }
 
@@ -364,20 +411,17 @@ allocproc(void)
 {
   struct proc *p;
 
-  for(p = proc; p < &proc[NPROC]; p++) {
-    acquire(&p->lock);
-    if(p->state == UNUSED) {
-      goto found;
-    } else {
-      release(&p->lock);
-    }
-  }
+  p = remove_first(UNUSEDL);
+  acquire(&p->lock);
+  goto found;
   return 0;
 
 found:
   p->pid = allocpid();
   p->state = USED;
   p->next = -1;
+
+  p->cpu_id = myproc()->cpu_id;    //todo
 
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
@@ -486,6 +530,15 @@ uchar initcode[] = {
 void
 userinit(void)
 {
+
+  if(!init){
+    struct cpu* c;
+    for(c = cpus; c < &cpus[NCPU]; c++){
+      c->head = 0;
+    }
+    init = 1;
+  }
+  
   struct proc *p;
 
   p = allocproc();
@@ -504,6 +557,8 @@ userinit(void)
   p->cwd = namei("/");
 
   p->state = RUNNABLE;
+  //not sure about this change or should use add_proc. should we lock anything?
+  cpus[p->cpu_id].head = p;
 
   release(&p->lock);
 }
@@ -767,6 +822,7 @@ yield(void)
   struct proc *p = myproc();
   acquire(&p->lock);
   p->state = RUNNABLE;
+  add_proc_to_list(p, READYL);
   sched();
   release(&p->lock);
 }
@@ -840,7 +896,7 @@ wakeup(void *chan)
   while(p->chan == chan){
     acquire(&p->list_lock);
     set_head(p->next, SLEEPINGL);
-    add_proc_to_list(p, READYL);
+    add_proc_to_another_cpu(p);
     p->state = RUNNABLE;
     release(&p->lock);
     release(&p->list_lock);
@@ -1013,6 +1069,6 @@ set_cpu(int cpu_num)
 int 
 get_cpu()
 {
-  return cpuid();
+  return myproc()->cpu_id;
 }
 
