@@ -10,6 +10,8 @@ extern uint64 cas (volatile void* address, int expected, int newval);
 
 struct cpu cpus[NCPU];
 
+struct proc* remove_first(int type, int cpu_id);
+
 struct proc *zombie_list = 0;
 struct proc *sleeping_list = 0;
 struct proc *unused_list = 0;
@@ -52,6 +54,18 @@ decrease_size(int cpu_id){
 uint64
 get_queue_size(int cpu_id){
   return cpus[cpu_id].queue_size;
+}
+
+struct proc*
+steal_process(){
+  struct proc* p=0;
+  for(int i=0; i<NCPU; i++){
+    if(get_queue_size(i)>1){
+      p = remove_first(READYL, i);
+      break;
+    }
+  }
+  return p;
 }
 
 int
@@ -814,8 +828,18 @@ scheduler(void)
 
     //if empty list
     if(!p){
-      continue;
+      if(!BLNCFLG){
+        continue;
+      }
+      p = steal_process();  //maybe deliver my own cpuid so wont steal from myself
+      if(!p){ 
+        continue;
+      }
+      decrease_size(p->cpu_id);
+      p->cpu_id = cpu_id;
+      increase_size(cpu_id);
     }
+    
     // printf("here5\n");
     acquire(&p->lock);
     // printf("here6\n");
@@ -1113,7 +1137,9 @@ set_cpu(int cpu_num)
   if(cpu_num<0 || cpu_num>NCPU){
     return -1;
   }
+  decrease_size(myproc()->cpu_id);
   myproc()->cpu_id = cpu_num;
+  increase_size(cpu_num);
   yield();
   return cpu_num;
 }
