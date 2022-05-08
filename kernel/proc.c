@@ -24,6 +24,47 @@ char* init_name = "init\n";
 
 enum list_type {READYL, ZOMBIEL, SLEEPINGL, UNUSEDL};
 
+
+void
+increase_size(int cpu_id){
+  struct cpu* c = &cpus[cpu_id];
+  uint64 old;
+  // printf("cpuid is: %d\n", cpu_id);
+  do{
+    old = c->queue_size;
+    // printf("increasing size from: %d\n", old);
+  } while(cas(&c->queue_size, old, old+1));
+  // printf("now the size is: %d\n", c->queue_size);
+}
+
+void
+decrease_size(int cpu_id){
+  struct cpu* c = &cpus[cpu_id];
+  // printf("cpuid is: %d\n", cpu_id);
+  uint64 old;
+  do{
+    old = c->queue_size;
+    // printf("decreasing size from: %d\n", old);
+  } while(cas(&c->queue_size, old, old-1));
+  // printf("now the size is: %d\n", c->queue_size);
+}
+
+uint64
+get_queue_size(int cpu_id){
+  return cpus[cpu_id].queue_size;
+}
+
+int
+get_lazy_cpu(){
+  int curr_min = 0;
+  for(int i=1; i<NCPU; i++){
+    // printf("queue size is %d: %d\n", i, cpus[i].queue_size);
+    curr_min = (cpus[i].queue_size < cpus[curr_min].queue_size) ? i : curr_min;
+  }
+  return curr_min;
+}
+
+
 struct proc* get_head(int type, int cpu_id){
   struct proc* p;
 
@@ -132,7 +173,7 @@ release_list(int type, int cpu_id){
 struct proc proc[NPROC];
 
 void
-add_to_list(struct proc* p, struct proc* head, int type)
+add_to_list(struct proc* p, struct proc* head, int type, int cpu_id)
 {
   // printf("add to list start\n");
   if(!p){
@@ -140,8 +181,16 @@ add_to_list(struct proc* p, struct proc* head, int type)
   }
   // empty list
   if(!head){
-      set_head(p, type, p->cpu_id);
-      release_list(type, p->cpu_id);
+      // if(type==READYL && cpu_id == 1){
+      //       printf("nohead\n");
+      //       printf("%p\n", p);
+      // }
+      set_head(p, type, cpu_id);
+      // if(type==READYL && cpu_id == 1){
+      //       printf("nohead\n");
+      //       printf("%p\n", get_head(READYL, cpu_id));
+      // }
+      release_list(type, cpu_id);
   }
   else{
     struct proc* prev = 0;
@@ -154,7 +203,7 @@ add_to_list(struct proc* p, struct proc* head, int type)
         release(&prev->list_lock);
       }
       else{
-        release_list(type, p->cpu_id);
+        release_list(type, cpu_id);
       }
       prev = head;
       head = head->next;
@@ -167,7 +216,7 @@ add_to_list(struct proc* p, struct proc* head, int type)
 }
 
 void 
-add_proc_to_list(struct proc* p, int type)
+add_proc_to_list(struct proc* p, int type, int cpu_id)
 {
   // printf("add proc to list start\n");
   // bad argument
@@ -175,9 +224,12 @@ add_proc_to_list(struct proc* p, int type)
     panic("Add proc to list");
   }
   struct proc* head;
-  acquire_list(type, p->cpu_id);
-  head = get_head(type, p->cpu_id);
-  add_to_list(p, head, type);
+  acquire_list(type, cpu_id);
+  head = get_head(type, cpu_id);
+  add_to_list(p, head, type, cpu_id);
+  // if(type == READYL && cpu_id == 1){
+  //   printf("hi");
+  // }
   // printf("add proc to list end\n");
 }
 
@@ -192,6 +244,10 @@ remove_first(int type, int cpu_id)
     release_list(type, cpu_id);
   }
   else{
+    // if(type==READYL && cpu_id == 1){
+    //         printf("yeshead\n");
+    //         printf("%p\n", head);
+    // }
     // printf("acquiring remove first: %d\n", head->pid);
     acquire(&head->list_lock);
     ret = head;
@@ -321,9 +377,9 @@ procinit(void)
   for(p = proc; p < &proc[NPROC]; p++) {
       initlock(&p->lock, "proc");
       initlock(&p->list_lock, "list lock");
-      p->cpu_id = 0;
+      p->cpu_id = -1;
       p->kstack = KSTACK((int) (p - proc));
-      add_proc_to_list(p, UNUSEDL);
+      add_proc_to_list(p, UNUSEDL, -1);
   }
 }
 
@@ -389,7 +445,8 @@ found:
   p->next = 0;
 
   // p->cpu_id = myproc()->cpu_id;    //todo
-  p->cpu_id = 0;
+  // p->cpu_id = 0; 
+
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
     freeproc(p);
@@ -435,7 +492,7 @@ freeproc(struct proc *p)
   p->xstate = 0;
   p->state = UNUSED;
   remove_proc(p, ZOMBIEL);
-  add_proc_to_list(p, UNUSEDL);
+  add_proc_to_list(p, UNUSEDL, -1);
 }
 
 // Create a user page table for a given process,
@@ -501,6 +558,7 @@ userinit(void)
     struct cpu* c;
     for(c = cpus; c < &cpus[NCPU]; c++){
       c->head = 0;
+      c->queue_size = 0;
     }
     init = 1;
   }
@@ -525,7 +583,9 @@ userinit(void)
   p->cwd = namei("/");
 
   p->state = RUNNABLE;
-  //not sure about this change or should use add_proc. should we lock anything?
+  p->cpu_id = 0;
+  increase_size(p->cpu_id);
+
   cpus[p->cpu_id].head = p;
 
   release(&p->lock);
@@ -597,9 +657,12 @@ fork(void)
 
   acquire(&np->lock);
   np->state = RUNNABLE;
-  np->cpu_id = p->cpu_id;
   
-  add_proc_to_list(np, READYL);
+  
+  int cpu_id = (BLNCFLG) ? get_lazy_cpu() : p->cpu_id;
+  np->cpu_id = cpu_id;
+  increase_size(cpu_id);
+  add_proc_to_list(np, READYL, cpu_id);
   release(&np->lock);
 
 
@@ -658,8 +721,10 @@ exit(int status)
 
   p->xstate = status;
   p->state = ZOMBIE;
-
-  add_proc_to_list(p, ZOMBIEL);
+  
+  // printf("decreasing exit\n");
+  decrease_size(p->cpu_id);
+  add_proc_to_list(p, ZOMBIEL, -1);
 
   release(&wait_lock);
 
@@ -731,6 +796,7 @@ scheduler(void)
   struct proc *p;
   struct cpu *c = mycpu();
   int cpu_id = cpuid();
+  // printf("cpu id: %d\n", cpu_id);
   
   c->proc = 0;
   for(;;){
@@ -740,6 +806,9 @@ scheduler(void)
     intr_on();
     // printf("here3\n");
     p = remove_first(READYL, cpu_id);
+    // if(cpu_id == 1 && p){
+    //   printf("%p\n" , p);
+    // }
     // printf("here4\n");
 
 
@@ -756,7 +825,13 @@ scheduler(void)
     p->state = RUNNING;
     c->proc = p;
     // printf("here8\n");
+    // if(cpu_id == 1 && p){
+    //   printf("poop1\n");
+    // }
     swtch(&c->context, &p->context);
+    // if(cpu_id == 1 && p){
+    //   printf("poop2\n");
+    // }
     // printf("here9\n");
 
     c->proc = 0;
@@ -800,7 +875,7 @@ yield(void)
   struct proc *p = myproc();
   acquire(&p->lock);
   p->state = RUNNABLE;
-  add_proc_to_list(p, READYL);
+  add_proc_to_list(p, READYL, p->cpu_id);
   sched();
   release(&p->lock);
 }
@@ -847,7 +922,9 @@ sleep(void *chan, struct spinlock *lk)
   p->chan = chan;
   p->state = SLEEPING;
   // printf("hihdiqwodhqwoidhqwidqw\n");
-  add_proc_to_list(p, SLEEPINGL);
+  // printf("decreasing sleep\n");
+  decrease_size(p->cpu_id);
+  add_proc_to_list(p, SLEEPINGL,-1);
   // printf("hihdiqwodhqwoidhqwidqw2\n");
 
 
@@ -866,7 +943,6 @@ sleep(void *chan, struct spinlock *lk)
 void
 wakeup(void *chan)
 {
-  // printf("start wakeup\n");
   int released_list = 0;
   struct proc *p;
   struct proc* prev = 0;
@@ -893,7 +969,10 @@ wakeup(void *chan)
         
         //add to runnable
         tmp->state = RUNNABLE;
-        add_proc_to_list(tmp, READYL);
+        int cpu_id = (BLNCFLG) ? get_lazy_cpu() : tmp->cpu_id;
+        tmp->cpu_id = cpu_id;
+        increase_size(cpu_id);
+        add_proc_to_list(tmp, READYL, cpu_id);
         // printf("releasing wakeup : %d\n", tmp->pid);
         release(&tmp->list_lock);
         release(&tmp->lock);
@@ -905,7 +984,10 @@ wakeup(void *chan)
         prev->next = p->next;
         p->next = 0;
         p->state = RUNNABLE;
-        add_proc_to_list(p, READYL);
+        int cpu_id = (BLNCFLG) ? get_lazy_cpu() : p->cpu_id;
+        p->cpu_id = cpu_id;
+        increase_size(cpu_id);
+        add_proc_to_list(p, READYL, cpu_id);
         // printf("releasing wakeup: %d\n", p->pid);
         release(&p->list_lock);
         release(&p->lock);
@@ -1040,5 +1122,10 @@ int
 get_cpu()
 {
   return myproc()->cpu_id;
+}
+
+int
+cpu_process_count(int cpu_num){
+  return get_queue_size(cpu_num);
 }
 

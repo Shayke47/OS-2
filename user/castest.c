@@ -7,8 +7,20 @@
 
 int castest(int size){
     int i;
+    int pid = 0;
     for(i=0; i<size; i++){
-        printf("%d\n",fork());
+        // printf("%d\n",fork());
+        pid  += fork();
+    }
+    if(pid==0){
+        for(int i=0; i<4; i++){
+            fprintf(1, "number of pros in cpu: %d is: %d\n", i, cpu_process_count(i));
+        }
+    }
+    else{
+        for(int i=0;i<100000000;i++){
+            continue;
+        }
     }
     return 0;
 }
@@ -16,5 +28,8 @@ int castest(int size){
 
 int main (int argc, char *argv[]){
     castest(5);
-    return 0;
+    // for(int i=0; i<4; i++){
+    //         fprintf(1, "number of pros in cpu: %d is: %d\n", i, cpu_process_count(i));
+    // }
+    exit(0);
 }
