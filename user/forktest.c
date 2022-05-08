@@ -5,7 +5,7 @@
 #include "kernel/stat.h"
 #include "user/user.h"
 
-#define N  50
+#define N  1000
 
 void
 print(const char *s)
@@ -27,10 +27,6 @@ forktest(void)
     if(pid == 0)
       exit(0);
   }
-
-  // for(int i=0; i<4; i++){
-  //   fprintf(1, "number of pros in cpu:");
-  // }
 
   if(n == N){
     print("fork claimed to work N times!\n");

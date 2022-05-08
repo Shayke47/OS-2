@@ -446,9 +446,11 @@ static struct proc*
 allocproc(void)
 {
   struct proc *p;
-
   // printf("first removal\n");
   p = remove_first(UNUSEDL, -1);
+  if(!p){
+    return 0;
+  }
   acquire(&p->lock);
   goto found;
   return 0;
@@ -633,7 +635,6 @@ fork(void)
   int i, pid;
   struct proc *np;
   struct proc *p = myproc();
-
   // Allocate process.
   if((np = allocproc()) == 0){
     return -1;
@@ -671,7 +672,7 @@ fork(void)
 
   acquire(&np->lock);
   np->state = RUNNABLE;
-  
+  // printf("pid: %d\n",np->pid);
   
   int cpu_id = (BLNCFLG) ? get_lazy_cpu() : p->cpu_id;
   np->cpu_id = cpu_id;
