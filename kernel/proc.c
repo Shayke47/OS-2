@@ -802,32 +802,22 @@ wait(uint64 addr)
 void
 scheduler(void)
 {
-  // printf("here1\n");
   struct proc *p;
   struct cpu *c = mycpu();
   int cpu_id = cpuid();
-  // printf("cpu id: %d\n", cpu_id);
   
   c->proc = 0;
   for(;;){
-    // printf("cpu id: %d", cpu_id);
-  // printf("here2\n");
     // Avoid deadlock by ensuring that devices can interrupt.
     intr_on();
-    // printf("here3\n");
     p = remove_first(READYL, cpu_id);
-    // if(cpu_id == 1 && p){
-    //   printf("%p\n" , p);
-    // }
-    // printf("here4\n");
-
 
     //if empty list
     if(!p){
       if(!BLNCFLG || BLNCFLG){
         continue;
       }
-      p = steal_process();  //maybe deliver my own cpuid so wont steal from myself
+      p = steal_process();
       if(!p){ 
         continue;
       }
@@ -835,29 +825,18 @@ scheduler(void)
       p->cpu_id = cpu_id;
       increase_size(cpu_id);
     }
-    
-    // printf("here5\n");
     acquire(&p->lock);
-    // printf("here6\n");
+
     if(p->state!=RUNNABLE)
       panic("bad proc was selected");
-    // printf("here7\n");
+  
     p->state = RUNNING;
     c->proc = p;
-    // printf("here8\n");
-    // if(cpu_id == 1 && p){
-    //   printf("poop1\n");
-    // }
+    
     swtch(&c->context, &p->context);
-    // if(cpu_id == 1 && p){
-    //   printf("poop2\n");
-    // }
-    // printf("here9\n");
-
+  
     c->proc = 0;
-    // printf("here10\n");
     release(&p->lock);
-    // printf("her119\n");
   }
 }
 
@@ -938,27 +917,13 @@ sleep(void *chan, struct spinlock *lk)
   // so it's okay to release lk.
 
   acquire(&p->lock);  //DOC: sleeplock1
-  // struct proc* tmp;
-  // if(p->pid == 3){
-  //   printf("process %d waiting to:\n", p->pid);
-  //   for(tmp=proc; tmp <&proc[NPROC]; tmp++){
-  //     if(tmp->parent == p){
-  //       printf("%d\n",tmp->pid);
-  //     }
-  //   }
-  // }
   release(lk);
 
   // Go to sleep.
   p->chan = chan;
   p->state = SLEEPING;
-  // printf("hihdiqwodhqwoidhqwidqw\n");
-  // printf("decreasing sleep\n");
   decrease_size(p->cpu_id);
-  // printf("%d processes left for cpu %d\n",get_queue_size(p->cpu_id), p->cpu_id);
   add_proc_to_list(p, SLEEPINGL,-1);
-  // printf("hihdiqwodhqwoidhqwidqw2\n");
-
 
   sched();
 
@@ -970,158 +935,124 @@ sleep(void *chan, struct spinlock *lk)
   acquire(lk);
 }
 
-void
-wakeup(void *chan)
-{
-  struct proc *p;
-
-  for(p = proc; p < &proc[NPROC]; p++) {
-    if(p != myproc()){
-      acquire(&p->lock);
-      if(p->state == SLEEPING && p->chan == chan) {
-        p->state = RUNNABLE;
-        remove_proc(p, SLEEPINGL);
-        int cpu_id = (BLNCFLG) ? get_lazy_cpu() : p->cpu_id;
-        add_proc_to_list(p, READYL, cpu_id);
-        increase_size(cpu_id);
-      }
-      release(&p->lock);
-    }
-  }
-}
-
-
-// Wake up all processes sleeping on chan.
-// Must be called without any p->lock.
 // void
 // wakeup(void *chan)
 // {
-//   int released_list = 0;
 //   struct proc *p;
-//   struct proc* prev = 0;
-//   struct proc* tmp;
-//   acquire_list(SLEEPINGL, -1);
-//   p = get_head(SLEEPINGL, -1);
-//   // printf("searching someone to wake up on %p\n",chan);
-//   while(p){
-//     // printf("wakeup while\n");
-//     acquire(&p->lock);
-//     // if(p->pid == 3){
-//     //   printf("checking proces 3\n");
-//     // }
-//     // printf("wakeup while after normal lock\n");
-//     // printf("acquire wakeup: %d\n", p->pid);
-//     acquire(&p->list_lock);
-//     // printf("wakeup while after list lock\n");
-//     if(p->chan == chan){
-//       if(p == get_head(SLEEPINGL, -1)){
-//         // printf("wakeup yes & head\n");
-//         //remove fom sleep
-//         set_head(p->next, SLEEPINGL, -1);
-        
-//         tmp = p;
-//         p = p->next;
-//         tmp->next = 0;
-//         // printf("pid: %d wakesup to cpu: %d\n", tmp->pid, tmp->cpu_id);
-//         // if(tmp->pid == 3){
-//         //   printf("waking up 3\n");
-//         // }
 
-        
-//         //add to runnable
-//         tmp->state = RUNNABLE;
-//         int cpu_id = (BLNCFLG) ? get_lazy_cpu() : tmp->cpu_id;
-//         tmp->cpu_id = cpu_id;
-//         increase_size(cpu_id);
-//         add_proc_to_list(tmp, READYL, cpu_id);
-//         // printf("releasing wakeup : %d\n", tmp->pid);
-//         release(&tmp->list_lock);
-//         release(&tmp->lock);
-//       }
-//       //we are not on the beginning of the list.
-//       else{
-//         // printf("wakeup yes & no\n");
-
-//         prev->next = p->next;
-//         p->next = 0;
-//         p->state = RUNNABLE;
-//         // if(p->pid == 3){
-//         //   printf("waking up 3\n");
-//         // }
-//         int cpu_id = (BLNCFLG) ? get_lazy_cpu() : p->cpu_id;
-//         p->cpu_id = cpu_id;
-//         // printf("pid: %d wakesup to cpu: %d\n", p->pid, p->cpu_id);
-//         increase_size(cpu_id);
-//         add_proc_to_list(p, READYL, cpu_id);
-//         // printf("releasing wakeup: %d\n", p->pid);
-//         release(&p->list_lock);
-//         release(&p->lock);
-//         p = prev->next;
-//       }
-//     } 
-//     else{
-//       //we are not on the chan
-//       if(p == get_head(SLEEPINGL, -1)){
-//         // printf("wakeup no & head\n");
-
-//         release_list(SLEEPINGL,-1);
-//         released_list = 1;
-//       }
-//       else{
-//         // printf("wakeup no & no\n");
-//         // printf("releasing wakeup: %d\n", prev->pid);
-//         release(&prev->list_lock);
-//         // release(&prev->lock);
-//       }
-//       release(&p->lock);  //because we dont need to change his fields
-//       prev = p;
-//       p = p->next;
-//     }
-//   }
-//   if(!released_list){
-//     release_list(SLEEPINGL, -1);
-//   }
-//   if(prev){
-//     // printf("releasing wakeup: %d\n", prev->pid);
-//     release(&prev->list_lock);
-//     // release(&prev->lock);
-//   }
-//   // printf("end wakeup\n");
-// }
-
-// int
-// shachar_wakeup(void *chan){
-//   // Wake up all processes sleeping on chan.
-// // Must be called without any p->lock.
-//   struct proc *p;
 //   for(p = proc; p < &proc[NPROC]; p++) {
 //     if(p != myproc()){
 //       acquire(&p->lock);
-//       //printf("proc pid: %d, state: %d\n",p->pid, p->state);
 //       if(p->state == SLEEPING && p->chan == chan) {
-//         //printf("1-----------------------------------------");
 //         p->state = RUNNABLE;
-//         remove_proc(&sleeping_head, p);
-//         //printf("2-----------------------------------------");
-//         if(balance) 
-//         {
-//           p->affiliated_cpu = least_used_cpu();
-//           uint64 q_size = cpus[p->affiliated_cpu].queue_size;
-//           while(cas(&cpus[p->affiliated_cpu].queue_size, q_size, q_size+1)) q_size = cpus[p->affiliated_cpu].queue_size;
-//         }
-//         insert_proc(&cpus[p->affiliated_cpu].runnable_head, p);
-//         // printf("3-----------------------------------------");
-//         //printf("\n\nTHELISTOFPROCESS of cpu %d:\n", p->affiliated_cpu);
-//         //print_process_list(&cpus[p->affiliated_cpu].runnable_head);
-//         //printf("the pointer : %p\n", cpus[p->affiliated_cpu].runnable_head.next);
-//         //print_process_table();
+//         remove_proc(p, SLEEPINGL);
+//         int cpu_id = (BLNCFLG) ? get_lazy_cpu() : p->cpu_id;
+//         add_proc_to_list(p, READYL, cpu_id);
+//         increase_size(cpu_id);
 //       }
 //       release(&p->lock);
 //     }
 //   }
-
 // }
 
+
+// Wake up all processes sleeping on chan.
+// Must be called without any p->lock.
+void
+wakeup(void *chan)
+{
+  int released_list = 0;
+  struct proc *p;
+  struct proc* prev = 0;
+  struct proc* tmp;
+  acquire_list(SLEEPINGL, -1);
+  p = get_head(SLEEPINGL, -1);
+  // printf("searching someone to wake up on %p\n",chan);
+  while(p){
+    // printf("wakeup while\n");
+    acquire(&p->lock);
+    // if(p->pid == 3){
+    //   printf("checking proces 3\n");
+    // }
+    // printf("wakeup while after normal lock\n");
+    // printf("acquire wakeup: %d\n", p->pid);
+    acquire(&p->list_lock);
+    // printf("wakeup while after list lock\n");
+    if(p->chan == chan){
+      if(p == get_head(SLEEPINGL, -1)){
+        // printf("wakeup yes & head\n");
+        //remove fom sleep
+        set_head(p->next, SLEEPINGL, -1);
+        
+        tmp = p;
+        p = p->next;
+        tmp->next = 0;
+        // printf("pid: %d wakesup to cpu: %d\n", tmp->pid, tmp->cpu_id);
+        // if(tmp->pid == 3){
+        //   printf("waking up 3\n");
+        // }
+
+        
+        //add to runnable
+        tmp->state = RUNNABLE;
+        int cpu_id = (BLNCFLG) ? get_lazy_cpu() : tmp->cpu_id;
+        tmp->cpu_id = cpu_id;
+        increase_size(cpu_id);
+        add_proc_to_list(tmp, READYL, cpu_id);
+        // printf("releasing wakeup : %d\n", tmp->pid);
+        release(&tmp->list_lock);
+        release(&tmp->lock);
+      }
+      //we are not on the beginning of the list.
+      else{
+        // printf("wakeup yes & no\n");
+
+        prev->next = p->next;
+        p->next = 0;
+        p->state = RUNNABLE;
+        // if(p->pid == 3){
+        //   printf("waking up 3\n");
+        // }
+        int cpu_id = (BLNCFLG) ? get_lazy_cpu() : p->cpu_id;
+        p->cpu_id = cpu_id;
+        // printf("pid: %d wakesup to cpu: %d\n", p->pid, p->cpu_id);
+        increase_size(cpu_id);
+        add_proc_to_list(p, READYL, cpu_id);
+        // printf("releasing wakeup: %d\n", p->pid);
+        release(&p->list_lock);
+        release(&p->lock);
+        p = prev->next;
+      }
+    } 
+    else{
+      //we are not on the chan
+      if(p == get_head(SLEEPINGL, -1)){
+        // printf("wakeup no & head\n");
+
+        release_list(SLEEPINGL,-1);
+        released_list = 1;
+      }
+      else{
+        // printf("wakeup no & no\n");
+        // printf("releasing wakeup: %d\n", prev->pid);
+        release(&prev->list_lock);
+        // release(&prev->lock);
+      }
+      release(&p->lock);  //because we dont need to change his fields
+      prev = p;
+      p = p->next;
+    }
+  }
+  if(!released_list){
+    release_list(SLEEPINGL, -1);
+  }
+  if(prev){
+    // printf("releasing wakeup: %d\n", prev->pid);
+    release(&prev->list_lock);
+    // release(&prev->lock);
+  }
+  // printf("end wakeup\n");
+}
 
 // Kill the process with the given pid.
 // The victim won't exit until it tries to return
@@ -1138,6 +1069,9 @@ kill(int pid)
       if(p->state == SLEEPING){
         // Wake process from sleep().
         p->state = RUNNABLE;
+        remove_proc(p, SLEEPINGL);
+        add_proc_to_list(p, READYL, p->cpu_id);
+        increase_size(p->cpu_id);
       }
       release(&p->lock);
       return 0;
