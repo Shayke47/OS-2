@@ -35,7 +35,7 @@ struct cpu {
   uint64 queue_size;
 };
 
-extern struct cpu cpus[NCPU];
+extern struct cpu cpus[CPUS];
 
 // per-process data for the trap handling code in trampoline.S.
 // sits in a page by itself just under the trampoline page in the

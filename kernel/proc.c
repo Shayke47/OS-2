@@ -8,7 +8,7 @@
 
 extern uint64 cas (volatile void* address, int expected, int newval);
 
-struct cpu cpus[NCPU];
+struct cpu cpus[CPUS];
 
 struct proc* remove_first(int type, int cpu_id);
 
@@ -16,7 +16,7 @@ struct proc *zombie_list = 0;
 struct proc *sleeping_list = 0;
 struct proc *unused_list = 0;
 
-struct spinlock ready_lock[NCPU];
+struct spinlock ready_lock[CPUS];
 struct spinlock zombie_lock;
 struct spinlock sleeping_lock;
 struct spinlock unused_lock;
@@ -31,24 +31,18 @@ void
 increase_size(int cpu_id){
   struct cpu* c = &cpus[cpu_id];
   uint64 old;
-  // printf("cpuid is: %d\n", cpu_id);
   do{
     old = c->queue_size;
-    // printf("increasing size from: %d\n", old);
   } while(cas(&c->queue_size, old, old+1));
-  // printf("now the size is: %d\n", c->queue_size);
 }
 
 void
 decrease_size(int cpu_id){
   struct cpu* c = &cpus[cpu_id];
-  // printf("cpuid is: %d\n", cpu_id);
   uint64 old;
   do{
     old = c->queue_size;
-    // printf("decreasing size from: %d\n", old);
   } while(cas(&c->queue_size, old, old-1));
-  // printf("now the size is: %d\n", c->queue_size);
 }
 
 uint64
@@ -59,7 +53,7 @@ get_queue_size(int cpu_id){
 struct proc*
 steal_process(){
   struct proc* p=0;
-  for(int i=0; i<NCPU; i++){
+  for(int i=0; i<CPUS; i++){
     if(get_queue_size(i)>1){
       p = remove_first(READYL, i);
       break;
@@ -71,8 +65,7 @@ steal_process(){
 int
 get_lazy_cpu(){
   int curr_min = 0;
-  for(int i=1; i<NCPU; i++){
-    // printf("queue size is %d: %d\n", i, cpus[i].queue_size);
+  for(int i=1; i<CPUS; i++){
     curr_min = (cpus[i].queue_size < cpus[curr_min].queue_size) ? i : curr_min;
   }
   return curr_min;
@@ -106,8 +99,6 @@ struct proc* get_head(int type, int cpu_id){
 void
 set_head(struct proc* p, int type, int cpu_id)
 {
-  // printf("sethead start\n");
-
   switch (type)
   {
   case READYL:
@@ -127,13 +118,10 @@ set_head(struct proc* p, int type, int cpu_id)
   default:
     panic("wrong type list");
   }
-  // printf("sethead end\n");
 }
 
 void
 acquire_list(int type, int cpu_id){
-  // printf("acuirelist start\n");
-  // printf("type: %d\n", type);
   switch (type)
   {
   case READYL:
@@ -143,7 +131,6 @@ acquire_list(int type, int cpu_id){
     acquire(&zombie_lock);
     break;
   case SLEEPINGL:
-    // printf("acquire sleeping\n");
     acquire(&sleeping_lock);
     break;
   case UNUSEDL:
@@ -153,12 +140,10 @@ acquire_list(int type, int cpu_id){
   default:
     panic("wrong type list");
   }
-  // printf("acquirelist end\n");
 }
 
 void
 release_list(int type, int cpu_id){
-  // printf("release list start\n");
   switch (type)
   {
   case READYL:
@@ -168,7 +153,6 @@ release_list(int type, int cpu_id){
     release(&zombie_lock);
     break;
   case SLEEPINGL:
-    // printf("release sleeping\n");
     release(&sleeping_lock);
     break;
   case UNUSEDL:
@@ -178,7 +162,6 @@ release_list(int type, int cpu_id){
   default:
     panic("wrong type list");
   }
-  // printf("release list end\n");
 }
 
 
@@ -189,31 +172,20 @@ struct proc proc[NPROC];
 void
 add_to_list(struct proc* p, struct proc* head, int type, int cpu_id)
 {
-  // printf("add to list start\n");
   if(!p){
     panic("can't add null to list");
   }
   // empty list
   if(!head){
-      // if(type==READYL && cpu_id == 1){
-      //       printf("nohead\n");
-      //       printf("%p\n", p);
-      // }
       set_head(p, type, cpu_id);
-      // if(type==READYL && cpu_id == 1){
-      //       printf("nohead\n");
-      //       printf("%p\n", get_head(READYL, cpu_id));
-      // }
       release_list(type, cpu_id);
   }
   else{
     struct proc* prev = 0;
     while(head){
-      // printf("acquiring add to list1: %d\n", head->pid);
       acquire(&head->list_lock);
 
       if(prev){
-        // printf("releasing add to list1: %d\n", prev->pid);
         release(&prev->list_lock);
       }
       else{
@@ -223,16 +195,13 @@ add_to_list(struct proc* p, struct proc* head, int type, int cpu_id)
       head = head->next;
     }
     prev->next = p;
-    // printf("releasing add to list2: %d\n", prev->pid);
     release(&prev->list_lock);
   }
-  // printf("add to list end\n");
 }
 
 void 
 add_proc_to_list(struct proc* p, int type, int cpu_id)
 {
-  // printf("add proc to list start\n");
   // bad argument
   if(!p){
     panic("Add proc to list");
@@ -241,31 +210,20 @@ add_proc_to_list(struct proc* p, int type, int cpu_id)
   acquire_list(type, cpu_id);
   head = get_head(type, cpu_id);
   add_to_list(p, head, type, cpu_id);
-  // if(type == READYL && cpu_id == 1){
-  //   printf("hi");
-  // }
-  // printf("add proc to list end\n");
 }
 
 struct proc* 
 remove_first(int type, int cpu_id)
 {
-  // printf("remove_first start\n");
   acquire_list(type, cpu_id);
   struct proc* head = get_head(type, cpu_id);
   if(!head){
     release_list(type, cpu_id);
   }
   else{
-    // if(type==READYL && cpu_id == 1){
-    //         printf("yeshead\n");
-    //         printf("%p\n", head);
-    // }
-    // printf("acquiring remove first: %d\n", head->pid);
     acquire(&head->list_lock);
 
     set_head(head->next, type, cpu_id);
-    // printf("releasing remove first: %d\n", head->pid);
     head->next = 0;
     release(&head->list_lock);
 
@@ -277,7 +235,6 @@ remove_first(int type, int cpu_id)
 
 int
 remove_proc(struct proc* p, int type){
-  // printf("remove proc start\n");
   acquire_list(type, p->cpu_id);
   struct proc* head = get_head(type, p->cpu_id);
   if(!head){
@@ -288,25 +245,20 @@ remove_proc(struct proc* p, int type){
     struct proc* prev = 0;
     if(p == head){
       // remove node, p is the first link
-      // printf("acquire remove_proc1: %d\n", p->pid);
       acquire(&p->list_lock);
       set_head(p->next, type, p->cpu_id);
       p->next = 0;
-      // printf("releasing remove proc: %d\n", head->pid);
       release(&p->list_lock);
       release_list(type, p->cpu_id);
     }
     else{
       while(head){
-        // printf("acquire remove_proc2: %d\n", head->pid);
         acquire(&head->list_lock);
 
         if(p == head){
           // remove node, head is the first link
           prev->next = head->next;
           p->next = 0;
-          // printf("releasing remove proc: %d\n", head->pid);
-          // printf("releasing remove proc: %d\n", prev->pid);
           release(&head->list_lock);
           release(&prev->list_lock);
           return 1;
@@ -315,7 +267,6 @@ remove_proc(struct proc* p, int type){
         if(!prev)
           release_list(type,p->cpu_id);
         else{
-          // printf("releasing remove proc: %d\n", head->pid);
           release(&prev->list_lock);
         }
           
@@ -326,7 +277,6 @@ remove_proc(struct proc* p, int type){
     }
     return 0;
   }
-  // printf("remove proc end\n");
 }
 
 struct proc *initproc;
@@ -365,6 +315,9 @@ proc_mapstacks(pagetable_t kpgtbl) {
 void
 procinit(void)
 {
+  if(CPUS > NCPU){
+    panic("recieved more CPUS than what is allowed");
+  }
   struct proc *p;
   
   initlock(&pid_lock, "nextpid");
@@ -374,7 +327,7 @@ procinit(void)
   initlock(&unused_lock, "unused lock");
   
   struct spinlock* s;
-  for(s = ready_lock; s <&ready_lock[NCPU]; s++){
+  for(s = ready_lock; s <&ready_lock[CPUS]; s++){
     initlock(s, "ready lock");
   }
 
@@ -436,7 +389,6 @@ static struct proc*
 allocproc(void)
 {
   struct proc *p;
-  // printf("first removal\n");
   p = remove_first(UNUSEDL, -1);
   if(!p){
     return 0;
@@ -449,9 +401,6 @@ found:
   p->pid = allocpid();
   p->state = USED;
   p->next = 0;
-
-  // p->cpu_id = myproc()->cpu_id;    //todo
-  // p->cpu_id = 0; 
 
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
@@ -483,7 +432,6 @@ found:
 static void
 freeproc(struct proc *p)
 {
-  // printf("freeproc start\n");
   if(p->trapframe)
     kfree((void*)p->trapframe);
   p->trapframe = 0;
@@ -500,7 +448,6 @@ freeproc(struct proc *p)
   p->state = UNUSED;
   remove_proc(p, ZOMBIEL);
   add_proc_to_list(p, UNUSEDL, -1);
-  // printf("freeproc end\n");
 }
 
 // Create a user page table for a given process,
@@ -564,7 +511,7 @@ userinit(void)
 {
   if(!init){
     struct cpu* c;
-    for(c = cpus; c < &cpus[NCPU]; c++){
+    for(c = cpus; c < &cpus[CPUS]; c++){
       c->head = 0;
       c->queue_size = 0;
     }
@@ -573,9 +520,7 @@ userinit(void)
   
   struct proc *p;
 
-  // printf("before\n");
   p = allocproc();
-  // printf("after\n");
   initproc = p;
   
   // allocate one user page and copy init's instructions
@@ -664,7 +609,6 @@ fork(void)
 
   acquire(&np->lock);
   np->state = RUNNABLE;
-  // printf("pid: %d\n",np->pid);
   
   int cpu_id = (BLNCFLG) ? get_lazy_cpu() : p->cpu_id;
   np->cpu_id = cpu_id;
@@ -722,7 +666,6 @@ exit(int status)
   reparent(p);
 
   // Parent might be sleeping in wait().
-  // printf("%d is waking up its parent\n", p->pid);
   wakeup(p->parent);
   
   acquire(&p->lock);
@@ -730,7 +673,6 @@ exit(int status)
   p->xstate = status;
   p->state = ZOMBIE;
   
-  // printf("decreasing exit\n");
   decrease_size(p->cpu_id);
   add_proc_to_list(p, ZOMBIEL, -1);
 
@@ -751,7 +693,6 @@ wait(uint64 addr)
   struct proc *p = myproc();
   
   acquire(&wait_lock);
-  // printf("process: %d starts to wait\n",p->pid);
 
   for(;;){
     // Scan through table looking for exited children.
@@ -787,7 +728,6 @@ wait(uint64 addr)
     }
     
     // Wait for a child to exit.
-    // printf("enter sleeping after wait\n");
     sleep(p, &wait_lock);  //DOC: wait-sleep
   }
 }
@@ -814,7 +754,7 @@ scheduler(void)
 
     //if empty list
     if(!p){
-      if(!BLNCFLG || BLNCFLG){
+      if(!BLNCFLG){
         continue;
       }
       p = steal_process();
@@ -906,9 +846,6 @@ void
 sleep(void *chan, struct spinlock *lk)
 {
   struct proc *p = myproc();
-  // printf("pid: %d goes to sleep from cpu: %d on %p\n", p->pid, p->cpu_id, p->chan);
-
-  
   // Must acquire p->lock in order to
   // change p->state and then call sched.
   // Once we hold p->lock, we can be
@@ -956,6 +893,7 @@ sleep(void *chan, struct spinlock *lk)
 // }
 
 
+
 // Wake up all processes sleeping on chan.
 // Must be called without any p->lock.
 void
@@ -967,58 +905,36 @@ wakeup(void *chan)
   struct proc* tmp;
   acquire_list(SLEEPINGL, -1);
   p = get_head(SLEEPINGL, -1);
-  // printf("searching someone to wake up on %p\n",chan);
   while(p){
-    // printf("wakeup while\n");
     acquire(&p->lock);
-    // if(p->pid == 3){
-    //   printf("checking proces 3\n");
-    // }
-    // printf("wakeup while after normal lock\n");
-    // printf("acquire wakeup: %d\n", p->pid);
     acquire(&p->list_lock);
-    // printf("wakeup while after list lock\n");
     if(p->chan == chan){
       if(p == get_head(SLEEPINGL, -1)){
-        // printf("wakeup yes & head\n");
         //remove fom sleep
         set_head(p->next, SLEEPINGL, -1);
         
         tmp = p;
         p = p->next;
         tmp->next = 0;
-        // printf("pid: %d wakesup to cpu: %d\n", tmp->pid, tmp->cpu_id);
-        // if(tmp->pid == 3){
-        //   printf("waking up 3\n");
-        // }
 
-        
         //add to runnable
         tmp->state = RUNNABLE;
         int cpu_id = (BLNCFLG) ? get_lazy_cpu() : tmp->cpu_id;
         tmp->cpu_id = cpu_id;
         increase_size(cpu_id);
         add_proc_to_list(tmp, READYL, cpu_id);
-        // printf("releasing wakeup : %d\n", tmp->pid);
         release(&tmp->list_lock);
         release(&tmp->lock);
       }
       //we are not on the beginning of the list.
       else{
-        // printf("wakeup yes & no\n");
-
         prev->next = p->next;
         p->next = 0;
         p->state = RUNNABLE;
-        // if(p->pid == 3){
-        //   printf("waking up 3\n");
-        // }
         int cpu_id = (BLNCFLG) ? get_lazy_cpu() : p->cpu_id;
         p->cpu_id = cpu_id;
-        // printf("pid: %d wakesup to cpu: %d\n", p->pid, p->cpu_id);
         increase_size(cpu_id);
         add_proc_to_list(p, READYL, cpu_id);
-        // printf("releasing wakeup: %d\n", p->pid);
         release(&p->list_lock);
         release(&p->lock);
         p = prev->next;
@@ -1027,16 +943,11 @@ wakeup(void *chan)
     else{
       //we are not on the chan
       if(p == get_head(SLEEPINGL, -1)){
-        // printf("wakeup no & head\n");
-
         release_list(SLEEPINGL,-1);
         released_list = 1;
       }
       else{
-        // printf("wakeup no & no\n");
-        // printf("releasing wakeup: %d\n", prev->pid);
         release(&prev->list_lock);
-        // release(&prev->lock);
       }
       release(&p->lock);  //because we dont need to change his fields
       prev = p;
@@ -1047,11 +958,8 @@ wakeup(void *chan)
     release_list(SLEEPINGL, -1);
   }
   if(prev){
-    // printf("releasing wakeup: %d\n", prev->pid);
     release(&prev->list_lock);
-    // release(&prev->lock);
   }
-  // printf("end wakeup\n");
 }
 
 // Kill the process with the given pid.
