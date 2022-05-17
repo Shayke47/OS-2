@@ -853,6 +853,10 @@ sleep(void *chan, struct spinlock *lk)
   // (wakeup locks p->lock),
   // so it's okay to release lk.
 
+//   In sleep you need to insert the process before you acquire it's process lock. this is not a problem because just after you release lk a wakeup can be called on the sleeping chan.
+// this mean that you will not need to hold both locks at the same time.
+  add_proc_to_list(p, SLEEPINGL,-1);
+
   acquire(&p->lock);  //DOC: sleeplock1
   release(lk);
 
@@ -860,7 +864,7 @@ sleep(void *chan, struct spinlock *lk)
   p->chan = chan;
   p->state = SLEEPING;
   decrease_size(p->cpu_id);
-  add_proc_to_list(p, SLEEPINGL,-1);
+
 
   sched();
 
@@ -965,6 +969,8 @@ wakeup(void *chan)
 // Kill the process with the given pid.
 // The victim won't exit until it tries to return
 // to user space (see usertrap() in trap.c).
+// In kill you can do the adding to the list after you release the process lock.
+// it also ok because you must need to remove it from the list before you can run it before you insert it to the list.
 int
 kill(int pid)
 {
@@ -977,14 +983,19 @@ kill(int pid)
       if(p->state == SLEEPING){
         // Wake process from sleep().
         p->state = RUNNABLE;
+        release(&p->lock);
         remove_proc(p, SLEEPINGL);
         add_proc_to_list(p, READYL, p->cpu_id);
         increase_size(p->cpu_id);
       }
-      release(&p->lock);
+      else{
+        release(&p->lock);
+      }
       return 0;
     }
-    release(&p->lock);
+    else{
+      release(&p->lock);
+    }
   }
   return -1;
 }
